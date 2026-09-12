@@ -1,9 +1,16 @@
 import streamlit as st
 import random
+import pandas as pd
+
+# 引入 Cloudflare D1 資料庫連線模組
+try:
+    import d1_client
+except Exception:
+    d1_client = None
 
 # 設定網頁標題與排版
 st.set_page_config(
-    page_title="九九乘法大對決 🎯 雙人/班級版",
+    page_title="九九乘法大對決 🎯 雙人/班級版 (Cloudflare D1 雲端後台)",
     page_icon="🧮",
     layout="wide"
 )
@@ -140,7 +147,7 @@ def generate_single_question(mode, table_nums):
     }
 
 # =========================================================================
-# 側邊欄：主模式切換
+# 側邊欄：主模式切換與雲端數據看板
 # =========================================================================
 st.sidebar.title("🎮 遊戲模式選擇")
 app_mode = st.sidebar.radio(
@@ -154,6 +161,35 @@ st.sidebar.info(
     "- **雙人對抗**：兩位同學站在電子白板左右兩側，看誰先按對！\n"
     "- **全班搶答**：適合老師投影在黑板帶全班計時刷題。"
 )
+
+# 雲端後台狀態與即時摘要
+st.sidebar.markdown("---")
+st.sidebar.subheader("☁️ 雲端教學數據庫 (D1)")
+
+if d1_client:
+    # 錯題熱點診斷
+    with st.sidebar.expander("📊 全班錯題熱點 TOP 5"):
+        try:
+            top_wrongs = d1_client.get_top_wrong_questions(5)
+            if top_wrongs:
+                for idx, w in enumerate(top_wrongs, 1):
+                    st.markdown(f"**{idx}. `{w['question']}`** ➔ 累計錯了 **{w['error_count']}** 次（正解: `{w['correct_answer']}`）")
+            else:
+                st.caption("目前尚無錯題紀錄，大家表現優異！")
+        except Exception as e:
+            st.caption(f"尚未連線資料庫: {e}")
+
+    # 即時英雄榜預覽
+    with st.sidebar.expander("🏆 即時搶答榜 TOP 5"):
+        try:
+            top_solos = d1_client.get_solo_leaderboard(5)
+            if top_solos:
+                for idx, s in enumerate(top_solos, 1):
+                    st.markdown(f"**第 {idx} 名**：{s['player_name']} — **{s['score']} 分** ({s['accuracy']}%)")
+            else:
+                st.caption("尚無排行榜數據")
+        except Exception as e:
+            st.caption(f"尚未連線資料庫: {e}")
 
 # =========================================================================
 # 模式一：⚔️ 雙人 / 分組對抗 PK 賽
@@ -173,6 +209,8 @@ if app_mode == "⚔️ 雙人 / 分組對抗 PK 賽":
         st.session_state.pk_msg = None
     if "winner" not in st.session_state:
         st.session_state.winner = None
+    if "pk_saved" not in st.session_state:
+        st.session_state.pk_saved = False
 
     def start_pk_game(mode, table_nums, target):
         st.session_state.pk_mode = mode
@@ -182,6 +220,7 @@ if app_mode == "⚔️ 雙人 / 分組對抗 PK 賽":
         st.session_state.blue_score = 0
         st.session_state.winner = None
         st.session_state.pk_msg = None
+        st.session_state.pk_saved = False
         st.session_state.pk_q = generate_single_question(mode, table_nums)
         st.session_state.pk_state = "playing"
 
@@ -336,6 +375,22 @@ if app_mode == "⚔️ 雙人 / 分組對抗 PK 賽":
             <p style="font-size: 28px; color: #78350F; font-weight: bold;">最終比分： 🔴 {st.session_state.red_score} 比 🔵 {st.session_state.blue_score}</p>
         </div>
         """, unsafe_allow_html=True)
+
+        # 自動將對抗賽戰報記錄至 Cloudflare D1
+        if d1_client and not st.session_state.get("pk_saved", False):
+            try:
+                d1_client.save_pk_record(
+                    st.session_state.red_name,
+                    st.session_state.blue_name,
+                    st.session_state.red_score,
+                    st.session_state.blue_score,
+                    st.session_state.winner,
+                    st.session_state.target_score,
+                    st.session_state.get("pk_mode", "標準對決")
+                )
+                st.session_state.pk_saved = True
+            except Exception:
+                pass
         
         c1, c2 = st.columns(2)
         with c1:
@@ -346,6 +401,27 @@ if app_mode == "⚔️ 雙人 / 分組對抗 PK 賽":
             if st.button("⚙️ 重新設定選手與規則", use_container_width=True):
                 st.session_state.pk_state = "setup"
                 st.rerun()
+
+        # 顯示最近對戰歷史紀錄
+        if d1_client:
+            st.write("---")
+            st.subheader("📜 最近對抗賽戰報 (Cloudflare D1)")
+            try:
+                history = d1_client.get_pk_recent_matches(5)
+                if history:
+                    df_pk = pd.DataFrame(history)
+                    df_pk = df_pk.rename(columns={
+                        "red_name": "紅隊",
+                        "blue_name": "藍隊",
+                        "red_score": "紅得分",
+                        "blue_score": "藍得分",
+                        "winner": "獲勝陣營",
+                        "game_mode": "題型",
+                        "created_at": "對戰時間"
+                    })
+                    st.dataframe(df_pk, use_container_width=True)
+            except Exception:
+                pass
 
 
 # =========================================================================
@@ -368,8 +444,13 @@ elif app_mode == "🎯 單人練習 / 全班投影搶答":
         st.session_state.history = []
     if "feedback" not in st.session_state:
         st.session_state.feedback = None
+    if "solo_saved" not in st.session_state:
+        st.session_state.solo_saved = False
+    if "wrong_saved" not in st.session_state:
+        st.session_state.wrong_saved = False
 
     def start_solo_game(mode, table_nums, count):
+        st.session_state.solo_mode = mode
         st.session_state.questions = [generate_single_question(mode, table_nums) for _ in range(count)]
         st.session_state.total_questions = count
         st.session_state.question_idx = 0
@@ -378,6 +459,8 @@ elif app_mode == "🎯 單人練習 / 全班投影搶答":
         st.session_state.max_combo = 0
         st.session_state.history = []
         st.session_state.feedback = None
+        st.session_state.solo_saved = False
+        st.session_state.wrong_saved = False
         st.session_state.game_state = "playing"
 
     def check_solo_answer(user_choice):
@@ -408,7 +491,7 @@ elif app_mode == "🎯 單人練習 / 全班投影搶答":
     st.title("🧮 全班投影 / 個人計時搶答模式")
 
     if st.session_state.game_state == "setup":
-        mode = st.radio("📌 選擇挑戰模式：", ["標準九九乘法 (2~9 隨機)", "指定段數特訓", "進階挑戰 (1~19)"], key="solo_mode")
+        mode = st.radio("📌 選擇挑戰模式：", ["標準九九乘法 (2~9 隨機)", "指定段數特訓", "進階挑戰 (1~19)"], key="solo_mode_radio")
         selected_tables = [7, 8, 9]
         if mode == "指定段數特訓":
             selected_tables = st.multiselect("選擇加強練習段數：", options=list(range(2, 10)), default=[7, 8, 9], key="solo_tables")
@@ -480,7 +563,72 @@ elif app_mode == "🎯 單人練習 / 全班投影搶答":
             st.subheader("📝 錯題檢討：")
             for item in wrong_history:
                 st.write(f"- ❌ **{item['question']}**（選了 {item['your_choice']}，正解：**{item['correct_answer']}**）")
+            
+            # 自動收集錯題到 Cloudflare D1
+            if d1_client and not st.session_state.get("wrong_saved", False):
+                try:
+                    d1_client.record_wrong_answers(wrong_history, st.session_state.get("solo_mode", "標準九九乘法"))
+                    st.session_state.wrong_saved = True
+                except Exception:
+                    pass
+
+        # ----------------- 登錄雲端英雄榜 -----------------
+        st.write("---")
+        st.subheader("🏆 登錄全班英雄榜 (Cloudflare D1)")
+        
+        if not st.session_state.get("solo_saved", False):
+            sc1, sc2 = st.columns([3, 1])
+            with sc1:
+                p_name = st.text_input("請輸入你的座號或姓名：", key="p_name_input", placeholder="例如：08號 烈火")
+            with sc2:
+                st.write("")
+                st.write("")
+                if st.button("📤 送出成績", type="primary", use_container_width=True):
+                    if p_name.strip() and d1_client:
+                        try:
+                            d1_client.save_solo_score(
+                                p_name.strip(),
+                                st.session_state.get("solo_mode", "標準九九乘法"),
+                                st.session_state.score,
+                                round(accuracy, 1),
+                                st.session_state.max_combo,
+                                total
+                            )
+                            st.session_state.solo_saved = True
+                            st.success(f"🎉 太棒了，{p_name}！成績已成功記錄到雲端英雄榜！")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"寫入資料庫失敗: {e}")
+                    elif not p_name.strip():
+                        st.warning("請先輸入座號或姓名喔！")
+        else:
+            st.success("✅ 本次成績已成功登錄至雲端英雄榜！")
+
+        # ----------------- 顯示全班排行榜 -----------------
+        if d1_client:
+            st.write("---")
+            st.subheader("🌟 全班即時英雄榜 TOP 10")
+            try:
+                board = d1_client.get_solo_leaderboard(10)
+                if board:
+                    df = pd.DataFrame(board)
+                    col_map = {
+                        "player_name": "選手姓名 / 座號",
+                        "score": "總得分",
+                        "accuracy": "答對率 (%)",
+                        "max_combo": "最高連擊",
+                        "game_mode": "挑戰模式",
+                        "created_at": "挑戰時間"
+                    }
+                    df = df.rename(columns=col_map)
+                    df.index = range(1, len(df) + 1)
+                    st.dataframe(df, use_container_width=True)
+                else:
+                    st.caption("目前英雄榜尚無資料，快成為第一位登錄的挑戰者吧！")
+            except Exception:
+                pass
                 
-        if st.button("🔄 再玩一次", type="primary", use_container_width=True):
+        st.write("")
+        if st.button("🔄 再玩一次", use_container_width=True):
             st.session_state.game_state = "setup"
             st.rerun()
