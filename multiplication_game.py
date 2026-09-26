@@ -182,6 +182,11 @@ with st.sidebar.expander("🏆 全班即時英雄榜 TOP 5", expanded=True):
             st.markdown(f"**#{idx+1} {row.get('player_name', '')}** — `{row.get('score', 0)} 分` ({t_str} / {row.get('accuracy', 0)}%)")
     else:
         st.write("尚無榜單資料，快來登錄第一筆！")
+        
+    if d1_client.is_d1_connected():
+        st.caption("🟢 雲端資料庫連線中（成績永久儲存）")
+    else:
+        st.caption("⚠️ 雲端暫存模式（未綁定金鑰時重啟將重置）")
 
 with st.sidebar.expander("📊 全班高頻錯題熱點 TOP 5", expanded=False):
     top_wrongs = d1_client.get_top_wrong_questions(5)

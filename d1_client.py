@@ -43,6 +43,11 @@ def get_config():
 
     return account_id, database_id, api_token
 
+def is_d1_connected():
+    """檢查是否有設定 Cloudflare API 金鑰"""
+    _, _, api_token = get_config()
+    return bool(api_token and api_token.strip())
+
 def execute_d1_query(sql: str, params: list = None):
     """執行 Cloudflare D1 查詢或寫入"""
     account_id, database_id, api_token = get_config()
@@ -71,12 +76,27 @@ def execute_d1_query(sql: str, params: list = None):
     except Exception:
         return None
 
+_schema_checked = False
+def ensure_db_schema():
+    """自動為舊版 D1 資料庫擴充 total_time 欄位（相容性防護）"""
+    global _schema_checked
+    if _schema_checked or not is_d1_connected():
+        return
+    try:
+        execute_d1_query("ALTER TABLE solo_records ADD COLUMN total_time REAL DEFAULT 0;")
+        _schema_checked = True
+    except Exception:
+        pass
+
 # ----------------- 專屬業務邏輯函式 -----------------
 
 def save_solo_score(player_name: str, game_mode: str, score: int, accuracy: float, max_combo: int, total_questions: int, total_time: float = 0.0):
     """儲存單人/全班搶答成績（含時間因素）"""
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
+    # 確保資料庫有 total_time 欄位
+    ensure_db_schema()
+
     # 1. 儲存至本地備援檔案
     local_data = _load_local_data()
     local_data.setdefault("solo_records", []).append({
@@ -92,13 +112,13 @@ def save_solo_score(player_name: str, game_mode: str, score: int, accuracy: floa
     _save_local_data(local_data)
 
     # 2. 同步至 Cloudflare D1（若有設定 Token）
-    # 嘗試寫入含 total_time 的欄位，若失敗則寫入基本欄位
     sql_with_time = """
     INSERT INTO solo_records (player_name, game_mode, score, accuracy, max_combo, total_questions, total_time)
     VALUES (?, ?, ?, ?, ?, ?, ?);
     """
     res = execute_d1_query(sql_with_time, [player_name, game_mode, score, accuracy, max_combo, total_questions, round(total_time, 1)])
     if res is None:
+        # 降級寫入舊版欄位
         sql_fallback = """
         INSERT INTO solo_records (player_name, game_mode, score, accuracy, max_combo, total_questions)
         VALUES (?, ?, ?, ?, ?, ?);
@@ -108,26 +128,40 @@ def save_solo_score(player_name: str, game_mode: str, score: int, accuracy: floa
     return True
 
 def get_solo_leaderboard(limit: int = 10):
-    """取得單人搶答英雄榜（綜合『總分高』與『時間短』進行排名）"""
-    # 嘗試從 D1 取得
-    sql = """
+    """取得單人搶答英雄榜（支援新舊版資料庫欄位相容降級）"""
+    ensure_db_schema()
+
+    # 1. 優先嘗試查詢包含 total_time 排序的新格式
+    sql_with_time = """
     SELECT player_name, game_mode, score, accuracy, max_combo, total_time, created_at
     FROM solo_records
     ORDER BY score DESC, total_time ASC, accuracy DESC, max_combo DESC
     LIMIT ?;
     """
-    d1_res = execute_d1_query(sql, [limit])
-    
+    d1_res = execute_d1_query(sql_with_time, [limit])
     if d1_res is not None and len(d1_res) > 0:
         return d1_res
 
-    # 若 D1 無資料或未連線，從本地檔案載入並依據『總分降冪、時間升冪、正確率降冪』排名
+    # 2. 若因舊版資料庫尚無 total_time 欄位導致失敗，降級執行舊版 SQL 查詢歷史資料
+    sql_legacy = """
+    SELECT player_name, game_mode, score, accuracy, max_combo, created_at
+    FROM solo_records
+    ORDER BY score DESC, accuracy DESC, max_combo DESC
+    LIMIT ?;
+    """
+    d1_legacy = execute_d1_query(sql_legacy, [limit])
+    if d1_legacy is not None and len(d1_legacy) > 0:
+        for r in d1_legacy:
+            if "total_time" not in r:
+                r["total_time"] = 0.0
+        return d1_legacy
+
+    # 3. 若 D1 無法連線，由本地檔案讀取
     local_data = _load_local_data()
     records = local_data.get("solo_records", [])
     if not records:
         return []
     
-    # 排序核心規則：總分由大到小，若同分則耗時由短到長，再比正確率
     sorted_records = sorted(
         records,
         key=lambda r: (
@@ -143,7 +177,6 @@ def save_pk_record(red_name: str, blue_name: str, red_score: int, blue_score: in
     """儲存雙人對戰紀錄"""
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    # 本地備援
     local_data = _load_local_data()
     local_data.setdefault("pk_records", []).append({
         "red_name": red_name,
@@ -157,7 +190,6 @@ def save_pk_record(red_name: str, blue_name: str, red_score: int, blue_score: in
     })
     _save_local_data(local_data)
 
-    # 雲端同步
     sql = """
     INSERT INTO pk_records (red_name, blue_name, red_score, blue_score, winner, target_score, game_mode)
     VALUES (?, ?, ?, ?, ?, ?, ?);
