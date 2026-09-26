@@ -91,7 +91,7 @@ def ensure_db_schema():
 # ----------------- 專屬業務邏輯函式 -----------------
 
 def save_solo_score(player_name: str, game_mode: str, score: int, accuracy: float, max_combo: int, total_questions: int, total_time: float = 0.0):
-    """儲存單人/全班搶答成績（含時間因素）"""
+    """儲存單人搶答成績（方案 C：完整記錄題數與總耗時）"""
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     # 確保資料庫有 total_time 欄位
@@ -127,41 +127,58 @@ def save_solo_score(player_name: str, game_mode: str, score: int, accuracy: floa
 
     return True
 
-def get_solo_leaderboard(limit: int = 10):
-    """取得單人搶答英雄榜（支援新舊版資料庫欄位相容降級）"""
+def get_solo_leaderboard(limit: int = 10, question_count: int = None):
+    """取得單人搶答英雄榜（方案 C：支援依題數賽道分組查詢）"""
     ensure_db_schema()
 
-    # 1. 優先嘗試查詢包含 total_time 排序的新格式
-    sql_with_time = """
-    SELECT player_name, game_mode, score, accuracy, max_combo, total_questions, total_time, created_at
-    FROM solo_records
-    ORDER BY score DESC, total_time ASC, accuracy DESC, max_combo DESC
-    LIMIT ?;
-    """
-    d1_res = execute_d1_query(sql_with_time, [limit])
-    if d1_res is not None and len(d1_res) > 0:
-        return d1_res
+    # 1. 如果有指定題數賽道 (如 5, 10, 15, 20...)
+    if question_count is not None:
+        sql_track = """
+        SELECT player_name, game_mode, score, accuracy, max_combo, total_questions, total_time, created_at
+        FROM solo_records
+        WHERE total_questions = ?
+        ORDER BY score DESC, total_time ASC, accuracy DESC, max_combo DESC
+        LIMIT ?;
+        """
+        d1_res = execute_d1_query(sql_track, [question_count, limit])
+        if d1_res is not None and len(d1_res) > 0:
+            return d1_res
 
-    # 2. 若因舊版資料庫尚無 total_time 欄位導致失敗，降級執行舊版 SQL 查詢歷史資料
-    sql_legacy = """
-    SELECT player_name, game_mode, score, accuracy, max_combo, total_questions, created_at
-    FROM solo_records
-    ORDER BY score DESC, accuracy DESC, max_combo DESC
-    LIMIT ?;
-    """
-    d1_legacy = execute_d1_query(sql_legacy, [limit])
-    if d1_legacy is not None and len(d1_legacy) > 0:
-        for r in d1_legacy:
-            if "total_time" not in r:
-                r["total_time"] = 0.0
-        return d1_legacy
+        # 降級查詢（若舊資料庫無 total_time）
+        sql_legacy = """
+        SELECT player_name, game_mode, score, accuracy, max_combo, total_questions, created_at
+        FROM solo_records
+        WHERE total_questions = ?
+        ORDER BY score DESC, accuracy DESC, max_combo DESC
+        LIMIT ?;
+        """
+        d1_legacy = execute_d1_query(sql_legacy, [question_count, limit])
+        if d1_legacy is not None and len(d1_legacy) > 0:
+            for r in d1_legacy:
+                if "total_time" not in r:
+                    r["total_time"] = 0.0
+            return d1_legacy
+    else:
+        # 全賽道綜合
+        sql_all = """
+        SELECT player_name, game_mode, score, accuracy, max_combo, total_questions, total_time, created_at
+        FROM solo_records
+        ORDER BY score DESC, total_time ASC, accuracy DESC, max_combo DESC
+        LIMIT ?;
+        """
+        d1_all = execute_d1_query(sql_all, [limit])
+        if d1_all is not None and len(d1_all) > 0:
+            return d1_all
 
-    # 3. 若 D1 無法連線，由本地檔案讀取
+    # 2. 本地備援檔案查詢
     local_data = _load_local_data()
     records = local_data.get("solo_records", [])
+    if question_count is not None:
+        records = [r for r in records if r.get("total_questions") == question_count]
+    
     if not records:
         return []
-    
+
     sorted_records = sorted(
         records,
         key=lambda r: (

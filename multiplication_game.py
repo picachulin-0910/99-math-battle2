@@ -172,16 +172,31 @@ st.sidebar.info(
     "- **單人挑戰**：每題限時 10 秒，速度越快加分越多，排行榜比拼『高分＋極速』！"
 )
 
-# 側邊欄：排行榜展示（納入時間因素）
+# 側邊欄：排行榜展示（方案 C：賽道切換）
 with st.sidebar.expander("🏆 全班即時英雄榜 TOP 5", expanded=True):
-    top_board = d1_client.get_solo_leaderboard(5)
+    track_opt = st.selectbox(
+        "🏁 查看賽道：",
+        ["10 題標準組", "5 題極速組", "15 題組", "20 題耐力組", "30 題極限組", "全賽道綜合"],
+        index=0,
+        key="sidebar_track_select"
+    )
+    track_map = {
+        "10 題標準組": 10,
+        "5 題極速組": 5,
+        "15 題組": 15,
+        "20 題耐力組": 20,
+        "30 題極限組": 30,
+        "全賽道綜合": None
+    }
+    chosen_track = track_map[track_opt]
+    top_board = d1_client.get_solo_leaderboard(5, question_count=chosen_track)
     if top_board:
         for idx, row in enumerate(top_board):
             t_sec = row.get('total_time', 0.0)
-            t_str = f"⏱️ {t_sec:.1f}s/題" if t_sec > 0 else ""
-            st.markdown(f"**#{idx+1} {row.get('player_name', '')}** — `{row.get('score', 0)} 戰力分` ({t_str} / {row.get('accuracy', 0)}%)")
+            t_str = f"⏱️ {t_sec:.1f}s" if t_sec > 0 else ""
+            st.markdown(f"**#{idx+1} {row.get('player_name', '')}** — `{row.get('score', 0)} 分` ({t_str} / {row.get('accuracy', 0)}%)")
     else:
-        st.write("尚無榜單資料，快來登錄第一筆！")
+        st.write(f"目前【{track_opt}】尚無榜單，快來爭奪第一！")
         
     if d1_client.is_d1_connected():
         st.caption("🟢 雲端資料庫連線中（成績永久儲存）")
@@ -564,7 +579,7 @@ elif app_mode == "🎯 單人練習 / 全班投影搶答":
     # --- 單人設定頁 ---
     if st.session_state.game_state == "setup":
         st.subheader("🧮 個人挑戰 / 全班計時搶答模式")
-        st.info("⏱️ **新規則升級**：每一題皆有 **10 秒作答倒數**！答得越快額外獎勵越高，個人排行榜綜合比拼「**總分高＋總耗時少**」！")
+        st.info("⏱️ **規則說明**：每一題皆有 **10 秒作答倒數**！答得越快額外獎勵越高。\n\n🏁 **方案 C 賽道競賽機制**：可自選 5/10/15/20/30 題，系統會依題數分入專屬賽道，各組獨立排名最公平！")
         
         mode = st.radio("📌 選擇挑戰模式：", ["標準九九乘法 (2~9 隨機)", "指定段數特訓", "進階挑戰 (1~19)"], key="solo_mode_radio")
         selected_tables = [7, 8, 9]
@@ -573,11 +588,12 @@ elif app_mode == "🎯 單人練習 / 全班投影搶答":
             
         c1, c2 = st.columns(2)
         with c1:
-            q_count = st.slider("🎯 題目數量：", min_value=5, max_value=30, value=10, step=5, key="solo_count")
+            q_count = st.slider("🎯 題目數量（自動分入對應賽道）：", min_value=5, max_value=30, value=10, step=5, key="solo_count")
+            st.success(f"🏁 本次挑戰將登錄進入【{q_count} 題組專屬賽道】！")
         with c2:
             st.write("")
             st.write("")
-            if st.button("🚀 開始挑戰（每題限時10秒）！", type="primary", use_container_width=True):
+            if st.button(f"🚀 開始【{q_count} 題組】賽道挑戰！", type="primary", use_container_width=True):
                 if mode == "指定段數特訓" and not selected_tables:
                     st.error("請選擇段數！")
                 else:
@@ -633,7 +649,7 @@ elif app_mode == "🎯 單人練習 / 全班投影搶答":
             st.session_state.game_state = "ended"
             st.rerun()
 
-    # --- 單人結算頁（顯示時間數據與時間加權英雄榜）---
+    # --- 單人結算頁（顯示時間數據與賽道分組英雄榜）---
     elif st.session_state.game_state == "ended":
         st.balloons()
         st.header("🏁 挑戰結束！成績結算")
@@ -643,19 +659,13 @@ elif app_mode == "🎯 單人練習 / 全班投影搶答":
         accuracy = (correct_count / total * 100) if total > 0 else 0
         total_time_spent = sum(h.get("time_spent", 0.0) for h in st.session_state.history)
         avg_time = (total_time_spent / total) if total > 0 else 0.0
-        
-        # 方案 A：標準化戰力積分（以 10 題為標準基準換算，徹底解決題數多寡不公問題）
-        # 公式：(實際總得分 / 總題數) * 10
-        raw_score = st.session_state.score
-        power_score = int(round((raw_score / total) * 10)) if total > 0 else 0
+        final_score = st.session_state.score
         
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("🎖️ 戰力積分（英雄榜標準）", f"{power_score} 分", f"原始得分 {raw_score} 分")
-        col2.metric("⏱️ 平均每題耗時", f"{avg_time:.1f} 秒/題", f"總耗時 {total_time_spent:.1f} 秒")
+        col1.metric("🏆 本局得分", f"{final_score} 分")
+        col2.metric("⏱️ 總作答時間", f"{total_time_spent:.1f} 秒", f"平均每題 {avg_time:.1f} 秒")
         col3.metric("🎯 答對率", f"{accuracy:.1f} %", f"{correct_count}/{total} 題")
         col4.metric("🔥 最高連擊", f"{st.session_state.max_combo} 次")
-        
-        st.caption("💡 **方案 A 公平戰力機制**：以 10 題為基準進行標準化換算，做 5 題與做 30 題完全公平！即使只做 5 題，只要答得快、答得準，也能奪下全班第一！")
         
         # 錯題檢討
         wrong_history = [h for h in st.session_state.history if not h["is_correct"]]
@@ -668,9 +678,9 @@ elif app_mode == "🎯 單人練習 / 全班投影搶答":
                 d1_client.record_wrong_answers(wrong_history, st.session_state.get("solo_mode", "標準九九乘法"))
                 st.session_state.wrong_saved = True
 
-        # 登錄全班英雄榜
+        # 登錄全班英雄榜（方案 C：所有題數皆可登錄專屬賽道）
         st.write("---")
-        st.subheader("🎖️ 登錄全班英雄榜")
+        st.subheader(f"🎖️ 登錄【{total} 題組專屬賽道】英雄榜")
         if not st.session_state.get("solo_saved", False):
             c_name, c_btn = st.columns([3, 1])
             with c_name:
@@ -680,28 +690,43 @@ elif app_mode == "🎯 單人練習 / 全班投影搶答":
                 st.write("")
                 if st.button("📤 登錄成績", type="primary", use_container_width=True):
                     if p_name.strip():
-                        mode_label = f"{st.session_state.get('solo_mode', '標準九九')} ({total}題)"
                         d1_client.save_solo_score(
                             p_name.strip(),
-                            mode_label,
-                            power_score,
+                            st.session_state.get('solo_mode', '標準九九乘法'),
+                            final_score,
                             round(accuracy, 1),
                             st.session_state.max_combo,
                             total,
-                            avg_time
+                            total_time_spent
                         )
                         st.session_state.solo_saved = True
-                        st.success(f"🎉 太棒了，{p_name.strip()}！戰力積分 {power_score} 分已成功登錄英雄榜！")
+                        st.success(f"🎉 太棒了，{p_name.strip()}！成績 {final_score} 分已成功登錄至【{total} 題組賽道】！")
                         st.rerun()
                     else:
                         st.warning("請先輸入姓名或座號！")
         else:
-            st.success("✅ 你的成績已成功登錄在全班英雄榜！")
+            st.success(f"✅ 你的成績已成功登錄在【{total} 題組賽道】英雄榜！")
 
-        # 英雄榜顯示（含時間排序）
-        st.subheader("🏆 全班即時英雄榜 TOP 10")
-        st.caption("💡 **方案 A 排名機制**：依【戰力積分（越高越好）】排名；若同分，則由【平均每題耗時（越短越好）】勝出！不論測驗題數多寡，皆具完全公平性。")
-        leaderboard = d1_client.get_solo_leaderboard(10)
+        # 英雄榜顯示（方案 C：賽道切換）
+        st.subheader("🏆 全班即時英雄榜 TOP 10（題數分流賽道）")
+        st.info("💡 **方案 C 賽道公平機制**：依照測驗題數分開排名，同組別選手公平較勁！先比【該組總分（越高越好）】；若同分，則由【該組總耗時（越短越好）】勝出。")
+
+        # 賽道切換（預設選中本次挑戰的賽道）
+        track_options = [f"🎯 本局賽道 ({total} 題組)", "10 題標準組", "5 題極速組", "15 題組", "20 題耐力組", "30 題極限組", "全賽道綜合榜"]
+        track_choice = st.radio("🏁 切換查看賽道榜單：", track_options, index=0, horizontal=True)
+
+        track_map = {
+            f"🎯 本局賽道 ({total} 題組)": total,
+            "10 題標準組": 10,
+            "5 題極速組": 5,
+            "15 題組": 15,
+            "20 題耐力組": 20,
+            "30 題極限組": 30,
+            "全賽道綜合榜": None
+        }
+        filter_count = track_map[track_choice]
+        leaderboard = d1_client.get_solo_leaderboard(10, question_count=filter_count)
+
         if leaderboard:
             formatted_board = []
             for idx, r in enumerate(leaderboard):
@@ -711,16 +736,16 @@ elif app_mode == "🎯 單人練習 / 全班投影搶答":
                     "排名": rank_str,
                     "選手姓名": r.get("player_name", ""),
                     "挑戰題型": r.get("game_mode", ""),
-                    "🎖️ 戰力積分": f"{r.get('score', 0)} 分",
-                    "⏱️ 平均耗時": f"{t_val:.1f} 秒/題" if t_val > 0 else "—",
+                    "賽道題數": f"{r.get('total_questions', '-')} 題" if r.get('total_questions') else "—",
+                    "🏆 總得分": f"{r.get('score', 0)} 分",
+                    "⏱️ 總耗時": f"{t_val:.1f} 秒" if t_val > 0 else "—",
                     "🎯 答對率": f"{r.get('accuracy', 0)}%",
-                    "📝 測驗題數": f"{r.get('total_questions', '-')} 題" if r.get('total_questions') else "—",
                     "🔥 最高連擊": f"{r.get('max_combo', 0)} 次",
                     "完成時間": r.get("created_at", "")[:19] if r.get("created_at") else ""
                 })
             st.dataframe(formatted_board, use_container_width=True)
         else:
-            st.info("💡 目前尚無排行榜紀錄，趕快成為第一位登錄的好手！")
+            st.info(f"💡 目前【{track_choice}】尚無榜單紀錄，趕快挑戰並搶先登錄！")
                 
         st.write("")
         if st.button("🔄 再玩一次", type="primary", use_container_width=True):
