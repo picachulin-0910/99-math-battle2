@@ -178,8 +178,8 @@ with st.sidebar.expander("🏆 全班即時英雄榜 TOP 5", expanded=True):
     if top_board:
         for idx, row in enumerate(top_board):
             t_sec = row.get('total_time', 0.0)
-            t_str = f"⏱️ {t_sec:.1f}s" if t_sec > 0 else ""
-            st.markdown(f"**#{idx+1} {row.get('player_name', '')}** — `{row.get('score', 0)} 分` ({t_str} / {row.get('accuracy', 0)}%)")
+            t_str = f"⏱️ {t_sec:.1f}s/題" if t_sec > 0 else ""
+            st.markdown(f"**#{idx+1} {row.get('player_name', '')}** — `{row.get('score', 0)} 戰力分` ({t_str} / {row.get('accuracy', 0)}%)")
     else:
         st.write("尚無榜單資料，快來登錄第一筆！")
         
@@ -644,11 +644,18 @@ elif app_mode == "🎯 單人練習 / 全班投影搶答":
         total_time_spent = sum(h.get("time_spent", 0.0) for h in st.session_state.history)
         avg_time = (total_time_spent / total) if total > 0 else 0.0
         
+        # 方案 A：標準化戰力積分（以 10 題為標準基準換算，徹底解決題數多寡不公問題）
+        # 公式：(實際總得分 / 總題數) * 10
+        raw_score = st.session_state.score
+        power_score = int(round((raw_score / total) * 10)) if total > 0 else 0
+        
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("🏆 最終總分", f"{st.session_state.score} 分")
-        col2.metric("⏱️ 總作答時間", f"{total_time_spent:.1f} 秒", f"平均每題 {avg_time:.1f} 秒")
+        col1.metric("🎖️ 戰力積分（英雄榜標準）", f"{power_score} 分", f"原始得分 {raw_score} 分")
+        col2.metric("⏱️ 平均每題耗時", f"{avg_time:.1f} 秒/題", f"總耗時 {total_time_spent:.1f} 秒")
         col3.metric("🎯 答對率", f"{accuracy:.1f} %", f"{correct_count}/{total} 題")
         col4.metric("🔥 最高連擊", f"{st.session_state.max_combo} 次")
+        
+        st.caption("💡 **方案 A 公平戰力機制**：以 10 題為基準進行標準化換算，做 5 題與做 30 題完全公平！即使只做 5 題，只要答得快、答得準，也能奪下全班第一！")
         
         # 錯題檢討
         wrong_history = [h for h in st.session_state.history if not h["is_correct"]]
@@ -673,17 +680,18 @@ elif app_mode == "🎯 單人練習 / 全班投影搶答":
                 st.write("")
                 if st.button("📤 登錄成績", type="primary", use_container_width=True):
                     if p_name.strip():
+                        mode_label = f"{st.session_state.get('solo_mode', '標準九九')} ({total}題)"
                         d1_client.save_solo_score(
                             p_name.strip(),
-                            st.session_state.get("solo_mode", "標準九九乘法"),
-                            st.session_state.score,
+                            mode_label,
+                            power_score,
                             round(accuracy, 1),
                             st.session_state.max_combo,
                             total,
-                            total_time_spent
+                            avg_time
                         )
                         st.session_state.solo_saved = True
-                        st.success(f"🎉 太棒了，{p_name.strip()}！成績已成功登錄英雄榜！")
+                        st.success(f"🎉 太棒了，{p_name.strip()}！戰力積分 {power_score} 分已成功登錄英雄榜！")
                         st.rerun()
                     else:
                         st.warning("請先輸入姓名或座號！")
@@ -692,7 +700,7 @@ elif app_mode == "🎯 單人練習 / 全班投影搶答":
 
         # 英雄榜顯示（含時間排序）
         st.subheader("🏆 全班即時英雄榜 TOP 10")
-        st.caption("💡 **排名機制**：先比較【總得分（越高越好）】；若分數相同，則由【總作答時間（越短越好）】勝出！")
+        st.caption("💡 **方案 A 排名機制**：依【戰力積分（越高越好）】排名；若同分，則由【平均每題耗時（越短越好）】勝出！不論測驗題數多寡，皆具完全公平性。")
         leaderboard = d1_client.get_solo_leaderboard(10)
         if leaderboard:
             formatted_board = []
@@ -703,9 +711,10 @@ elif app_mode == "🎯 單人練習 / 全班投影搶答":
                     "排名": rank_str,
                     "選手姓名": r.get("player_name", ""),
                     "挑戰題型": r.get("game_mode", ""),
-                    "🏆 總得分": f"{r.get('score', 0)} 分",
-                    "⏱️ 總作答時間": f"{t_val:.1f} 秒" if t_val > 0 else "—",
+                    "🎖️ 戰力積分": f"{r.get('score', 0)} 分",
+                    "⏱️ 平均耗時": f"{t_val:.1f} 秒/題" if t_val > 0 else "—",
                     "🎯 答對率": f"{r.get('accuracy', 0)}%",
+                    "📝 測驗題數": f"{r.get('total_questions', '-')} 題" if r.get('total_questions') else "—",
                     "🔥 最高連擊": f"{r.get('max_combo', 0)} 次",
                     "完成時間": r.get("created_at", "")[:19] if r.get("created_at") else ""
                 })

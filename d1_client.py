@@ -133,7 +133,7 @@ def get_solo_leaderboard(limit: int = 10):
 
     # 1. 優先嘗試查詢包含 total_time 排序的新格式
     sql_with_time = """
-    SELECT player_name, game_mode, score, accuracy, max_combo, total_time, created_at
+    SELECT player_name, game_mode, score, accuracy, max_combo, total_questions, total_time, created_at
     FROM solo_records
     ORDER BY score DESC, total_time ASC, accuracy DESC, max_combo DESC
     LIMIT ?;
@@ -144,7 +144,7 @@ def get_solo_leaderboard(limit: int = 10):
 
     # 2. 若因舊版資料庫尚無 total_time 欄位導致失敗，降級執行舊版 SQL 查詢歷史資料
     sql_legacy = """
-    SELECT player_name, game_mode, score, accuracy, max_combo, created_at
+    SELECT player_name, game_mode, score, accuracy, max_combo, total_questions, created_at
     FROM solo_records
     ORDER BY score DESC, accuracy DESC, max_combo DESC
     LIMIT ?;
