@@ -1,7 +1,30 @@
 import streamlit as st
 import random
 import time
+import importlib
 import d1_client
+
+# 確保在 Streamlit Cloud 熱重載時 d1_client 模組強制同步刷新最新簽章
+try:
+    importlib.reload(d1_client)
+except Exception:
+    pass
+
+def safe_get_solo_leaderboard(limit=10, question_count=None):
+    """安全取得單人排行榜，具備快取相容與例外防護機制"""
+    try:
+        return d1_client.get_solo_leaderboard(limit=limit, question_count=question_count)
+    except TypeError:
+        try:
+            importlib.reload(d1_client)
+            return d1_client.get_solo_leaderboard(limit=limit, question_count=question_count)
+        except Exception:
+            try:
+                return d1_client.get_solo_leaderboard(limit)
+            except Exception:
+                return []
+    except Exception:
+        return []
 
 # 設定網頁標題與排版
 st.set_page_config(
@@ -189,7 +212,7 @@ with st.sidebar.expander("🏆 全班即時英雄榜 TOP 5", expanded=True):
         "全賽道綜合": None
     }
     chosen_track = track_map[track_opt]
-    top_board = d1_client.get_solo_leaderboard(5, question_count=chosen_track)
+    top_board = safe_get_solo_leaderboard(5, question_count=chosen_track)
     if top_board:
         for idx, row in enumerate(top_board):
             t_sec = row.get('total_time', 0.0)
@@ -725,7 +748,7 @@ elif app_mode == "🎯 單人練習 / 全班投影搶答":
             "全賽道綜合榜": None
         }
         filter_count = track_map[track_choice]
-        leaderboard = d1_client.get_solo_leaderboard(10, question_count=filter_count)
+        leaderboard = safe_get_solo_leaderboard(10, question_count=filter_count)
 
         if leaderboard:
             formatted_board = []

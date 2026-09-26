@@ -127,8 +127,10 @@ def save_solo_score(player_name: str, game_mode: str, score: int, accuracy: floa
 
     return True
 
-def get_solo_leaderboard(limit: int = 10, question_count: int = None):
+def get_solo_leaderboard(limit: int = 10, question_count: int = None, *args, **kwargs):
     """取得單人搶答英雄榜（方案 C：支援依題數賽道分組查詢）"""
+    if question_count is None and "question_count" in kwargs:
+        question_count = kwargs["question_count"]
     ensure_db_schema()
 
     # 1. 如果有指定題數賽道 (如 5, 10, 15, 20...)
